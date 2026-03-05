@@ -60,7 +60,6 @@ export default function Dashboard() {
     cursor: "pointer",
     background: "transparent",
     border: "none",
-    borderBottom: `2px solid ${active ? theme.accent : "transparent"}`,
     transition: "all 0.15s",
     letterSpacing: "0.02em",
   });
