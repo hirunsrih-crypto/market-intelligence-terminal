@@ -1,17 +1,10 @@
 """
 APScheduler jobs for periodic cache refresh.
-
-Schedule:
-  - Equity indices:   every 1 min
-  - FX rates:         every 1 min
-  - Commodities:      every 5 min
-  - VIX:              every 1 min
-  - Bond yields:      every 30 min
-  - Intraday bars:    every 5 min
-  - Economic calendar: every 15 min
-  - Fund flows:       every 60 min
+All blocking tvdatafeed/FRED calls run in a thread pool via asyncio.to_thread()
+so the event loop (and healthcheck) are never blocked.
 """
 
+import asyncio
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from data.tv_fetcher import TVFetcher
@@ -44,7 +37,7 @@ def _get_fred() -> FREDFetcher:
 
 async def refresh_indices():
     try:
-        data = _get_tv().fetch_all_indices()
+        data = await asyncio.to_thread(_get_tv().fetch_all_indices)
         await set_cache("indices", data)
         logger.info("Refreshed indices")
     except Exception as e:
@@ -53,7 +46,7 @@ async def refresh_indices():
 
 async def refresh_fx():
     try:
-        data = _get_tv().fetch_all_fx()
+        data = await asyncio.to_thread(_get_tv().fetch_all_fx)
         await set_cache("fx", data)
         logger.info("Refreshed FX")
     except Exception as e:
@@ -62,7 +55,7 @@ async def refresh_fx():
 
 async def refresh_commodities():
     try:
-        data = _get_tv().fetch_all_commodities()
+        data = await asyncio.to_thread(_get_tv().fetch_all_commodities)
         await set_cache("commodities", data)
         logger.info("Refreshed commodities")
     except Exception as e:
@@ -71,7 +64,7 @@ async def refresh_commodities():
 
 async def refresh_vix():
     try:
-        data = _get_tv().fetch_vix()
+        data = await asyncio.to_thread(_get_tv().fetch_vix)
         await set_cache("vix", {"value": data})
         logger.info("Refreshed VIX")
     except Exception as e:
@@ -80,7 +73,7 @@ async def refresh_vix():
 
 async def refresh_crypto():
     try:
-        data = _get_tv().fetch_crypto()
+        data = await asyncio.to_thread(_get_tv().fetch_crypto)
         await set_cache("crypto", data)
         logger.info("Refreshed crypto")
     except Exception as e:
@@ -89,7 +82,7 @@ async def refresh_crypto():
 
 async def refresh_yields():
     try:
-        data = _get_fred().get_us_yields()
+        data = await asyncio.to_thread(_get_fred().get_us_yields)
         await set_cache("yields", data)
         logger.info("Refreshed yields")
     except Exception as e:
@@ -98,7 +91,7 @@ async def refresh_yields():
 
 async def refresh_intraday():
     try:
-        data = _get_tv().fetch_all_intraday()
+        data = await asyncio.to_thread(_get_tv().fetch_all_intraday)
         for sym, bars in data.items():
             await set_cache(f"intraday_{sym}", bars)
         logger.info("Refreshed intraday")
@@ -108,7 +101,7 @@ async def refresh_intraday():
 
 async def refresh_calendar():
     try:
-        data = get_today_events()
+        data = await asyncio.to_thread(get_today_events)
         await set_cache("calendar", data)
         logger.info("Refreshed calendar")
     except Exception as e:
@@ -117,7 +110,7 @@ async def refresh_calendar():
 
 async def refresh_flows():
     try:
-        data = get_fund_flows()
+        data = await asyncio.to_thread(get_fund_flows)
         await set_cache("flows", data)
         logger.info("Refreshed fund flows")
     except Exception as e:
@@ -125,18 +118,22 @@ async def refresh_flows():
 
 
 async def run_initial_refresh():
-    """Run all refreshes once at startup."""
+    """Run all refreshes concurrently at startup — non-blocking."""
     logger.info("Running initial data refresh...")
-    await refresh_indices()
-    await refresh_fx()
-    await refresh_commodities()
-    await refresh_vix()
-    await refresh_crypto()
-    await refresh_yields()
-    await refresh_intraday()
-    await refresh_calendar()
-    await refresh_flows()
-    logger.info("Initial refresh complete.")
+    await asyncio.gather(
+        refresh_calendar(),
+        refresh_flows(),
+        refresh_yields(),
+        return_exceptions=True,
+    )
+    # TV data in background — don't wait for slow WebSocket calls
+    asyncio.create_task(refresh_indices())
+    asyncio.create_task(refresh_fx())
+    asyncio.create_task(refresh_commodities())
+    asyncio.create_task(refresh_vix())
+    asyncio.create_task(refresh_crypto())
+    asyncio.create_task(refresh_intraday())
+    logger.info("Initial refresh scheduled.")
 
 
 def start_scheduler():
