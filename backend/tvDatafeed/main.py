@@ -75,29 +75,42 @@ class TvDatafeed:
 
     @staticmethod
     def _parse_data(raw: str, symbol: str) -> pd.DataFrame:
-        try:
-            out = re.search(r'"s":\[(.+?)\}\]', raw).group(1)
-            rows = []
-            for part in out.split(',{"'):
-                fields = re.split(r"\[|:|,|\]", part)
-                ts = datetime.datetime.fromtimestamp(float(fields[4]))
-                rows.append([
-                    ts,
-                    float(fields[5]),
-                    float(fields[6]),
-                    float(fields[7]),
-                    float(fields[8]),
-                    float(fields[9]),
-                ])
-            df = pd.DataFrame(
-                rows,
-                columns=["datetime", "open", "high", "low", "close", "volume"],
-            ).set_index("datetime")
-            df.insert(0, "symbol", symbol)
-            return df
-        except AttributeError:
-            logger.error(f"No data returned for {symbol}. Check exchange/symbol.")
+        """Parse TradingView WebSocket frames using JSON — no fragile regex splits."""
+        rows = []
+        for line in raw.split("\n"):
+            # Each frame: ~m~<len>~m~<json>
+            for part in re.split(r"~m~\d+~m~", line):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    msg = json.loads(part)
+                    if msg.get("m") not in ("timescale_update", "du"):
+                        continue
+                    payload = msg.get("p", [])
+                    if len(payload) < 2 or not isinstance(payload[1], dict):
+                        continue
+                    for series in payload[1].values():
+                        if not isinstance(series, dict) or "s" not in series:
+                            continue
+                        for bar in series["s"]:
+                            v = bar.get("v", [])
+                            if len(v) >= 6:
+                                ts = datetime.datetime.fromtimestamp(float(v[0]))
+                                rows.append([ts, float(v[1]), float(v[2]),
+                                             float(v[3]), float(v[4]), float(v[5])])
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    continue
+
+        if not rows:
+            logger.error(f"No data parsed for {symbol}. Check exchange/symbol.")
             return None
+
+        df = pd.DataFrame(
+            rows, columns=["datetime", "open", "high", "low", "close", "volume"]
+        ).set_index("datetime")
+        df.insert(0, "symbol", symbol)
+        return df
 
     @staticmethod
     def _format_symbol(symbol: str, exchange: str, contract: int = None) -> str:
