@@ -75,32 +75,41 @@ class TvDatafeed:
 
     @staticmethod
     def _parse_data(raw: str, symbol: str) -> pd.DataFrame:
-        """Parse TradingView WebSocket frames using JSON — no fragile regex splits."""
+        """Parse TradingView WebSocket frames — searches all message types for series data."""
         rows = []
+        seen_types = set()
+
         for line in raw.split("\n"):
-            # Each frame: ~m~<len>~m~<json>
             for part in re.split(r"~m~\d+~m~", line):
                 part = part.strip()
                 if not part:
                     continue
                 try:
                     msg = json.loads(part)
-                    if msg.get("m") not in ("timescale_update", "du"):
-                        continue
+                    msg_type = msg.get("m", "")
+                    seen_types.add(msg_type)
+
                     payload = msg.get("p", [])
-                    if len(payload) < 2 or not isinstance(payload[1], dict):
-                        continue
-                    for series in payload[1].values():
-                        if not isinstance(series, dict) or "s" not in series:
+                    # Search every dict in payload for series data
+                    for item in payload:
+                        if not isinstance(item, dict):
                             continue
-                        for bar in series["s"]:
-                            v = bar.get("v", [])
-                            if len(v) >= 6:
-                                ts = datetime.datetime.fromtimestamp(float(v[0]))
-                                rows.append([ts, float(v[1]), float(v[2]),
-                                             float(v[3]), float(v[4]), float(v[5])])
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        for val in item.values():
+                            if not isinstance(val, dict) or "s" not in val:
+                                continue
+                            for bar in val["s"]:
+                                v = bar.get("v", [])
+                                if len(v) >= 6:
+                                    try:
+                                        ts = datetime.datetime.fromtimestamp(float(v[0]))
+                                        rows.append([ts, float(v[1]), float(v[2]),
+                                                     float(v[3]), float(v[4]), float(v[5])])
+                                    except (ValueError, TypeError):
+                                        continue
+                except (json.JSONDecodeError, KeyError, TypeError):
                     continue
+
+        logger.info(f"Parsed {len(rows)} rows for {symbol}. Message types seen: {seen_types}")
 
         if not rows:
             logger.error(f"No data parsed for {symbol}. Check exchange/symbol.")
