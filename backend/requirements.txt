@@ -6,6 +6,6 @@ pandas==2.2.2
 python-dotenv==1.0.1
 pydantic==2.8.2
 aiohttp==3.10.5
-tvdatafeed==2.3.0
+git+https://github.com/StreamAlpha/tvdatafeed.git
 fredapi==0.5.2
 httpx==0.27.2
