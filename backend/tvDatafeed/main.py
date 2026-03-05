@@ -186,6 +186,11 @@ class TvDatafeed:
                 if "series_completed" in result:
                     break
 
+            # Log a sample of raw data to diagnose parsing issues
+            sample = raw[:2000] if len(raw) > 2000 else raw
+            logger.debug(f"RAW SAMPLE for {full_symbol}: {repr(sample)}")
+            logger.info(f"RAW LENGTH for {full_symbol}: {len(raw)} chars, contains 'series_completed': {'series_completed' in raw}, contains '\"s\":[': {'\"s\":[' in raw}")
+
             return self._parse_data(raw, full_symbol)
 
         except Exception as e:
