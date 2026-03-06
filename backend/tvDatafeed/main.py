@@ -44,19 +44,29 @@ class TvDatafeed:
         self.ws = None
 
     def _get_token(self, username: str, password: str) -> str:
+        import os
+
+        # Priority 1: pre-fetched token set directly as env var (most reliable)
+        direct_token = os.getenv("TV_AUTH_TOKEN", "").strip()
+        if direct_token:
+            logger.info("Using TV_AUTH_TOKEN from environment")
+            return direct_token
+
+        # Priority 2: login via API (may be blocked from cloud IPs)
         if not username or not password:
-            logger.warning("No credentials provided — using no-login mode (limited data)")
+            logger.warning("No credentials — using no-login mode (limited data)")
             return "unauthorized_user_token"
         try:
             session = requests.Session()
             session.headers.update({
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://www.tradingview.com",
+                "Origin": "https://www.tradingview.com",
             })
             resp = session.post(
                 self._sign_in_url,
                 data={"username": username, "password": password, "remember": "on"},
-                timeout=10,
+                timeout=15,
             )
             data = resp.json()
             if "error" in data:
@@ -64,9 +74,9 @@ class TvDatafeed:
                 return "unauthorized_user_token"
             token = data.get("user", {}).get("auth_token", "")
             if token:
-                logger.info("TradingView login successful — using authenticated token")
+                logger.info("TradingView login successful")
                 return token
-            logger.error("TradingView login: no auth_token in response")
+            logger.error("No auth_token in TradingView response")
             return "unauthorized_user_token"
         except Exception as e:
             logger.error(f"TradingView login error: {e}")
