@@ -40,22 +40,78 @@ class TvDatafeed:
     _sign_in_url = "https://www.tradingview.com/accounts/signin/"
 
     def __init__(self, username: str = None, password: str = None):
-        self.token = self._get_token(username, password)
+        import os
+        self._session_id = os.getenv("TV_SESSION_ID", "").strip()
+        self._username = username
+        self._password = password
+        self.token = self._get_token()
+        self._token_time = datetime.datetime.now()
         self.ws = None
 
-    def _get_token(self, username: str, password: str) -> str:
+    def _refresh_token_if_needed(self):
+        """Auto-refresh JWT if older than 3 hours."""
+        age = (datetime.datetime.now() - self._token_time).total_seconds()
+        if age > 3 * 3600:
+            logger.info("Token older than 3 hours — refreshing...")
+            self.token = self._get_token()
+            self._token_time = datetime.datetime.now()
+
+    def _get_token(self) -> str:
         import os
 
-        # Priority 1: pre-fetched token set directly as env var (most reliable)
+        # Priority 1: pre-fetched JWT token (manual, expires in ~4 hours)
         direct_token = os.getenv("TV_AUTH_TOKEN", "").strip()
         if direct_token:
             logger.info("Using TV_AUTH_TOKEN from environment")
             return direct_token
 
-        # Priority 2: login via API (may be blocked from cloud IPs)
-        if not username or not password:
-            logger.warning("No credentials — using no-login mode (limited data)")
-            return "unauthorized_user_token"
+        # Priority 2: use session ID cookie to fetch fresh JWT (lasts weeks/months)
+        if self._session_id:
+            token = self._token_from_session(self._session_id)
+            if token:
+                return token
+
+        # Priority 3: login via API (may be blocked from cloud IPs)
+        if self._username and self._password:
+            token = self._token_from_login(self._username, self._password)
+            if token:
+                return token
+
+        logger.warning("No credentials — using no-login mode (limited data)")
+        return "unauthorized_user_token"
+
+    def _token_from_session(self, session_id: str) -> str:
+        """Use the long-lived sessionid cookie to get a fresh JWT auth token."""
+        try:
+            resp = requests.get(
+                "https://www.tradingview.com/chart/",
+                cookies={"sessionid": session_id},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                },
+                timeout=15,
+            )
+            match = re.search(r'"auth_token":"([^"]+)"', resp.text)
+            if match:
+                token = match.group(1)
+                logger.info("Got fresh JWT from session ID cookie")
+                return token
+
+            # Try alternative pattern
+            match = re.search(r'authToken\\":\\"([^\\]+)\\"', resp.text)
+            if match:
+                token = match.group(1)
+                logger.info("Got fresh JWT from session ID cookie (alt pattern)")
+                return token
+
+            logger.error("Session ID valid but could not extract auth_token from page")
+            return None
+        except Exception as e:
+            logger.error(f"Session-based token refresh failed: {e}")
+            return None
+
+    def _token_from_login(self, username: str, password: str) -> str:
+        """Login via TradingView API — may be blocked from cloud IPs."""
         try:
             session = requests.Session()
             session.headers.update({
@@ -71,16 +127,15 @@ class TvDatafeed:
             data = resp.json()
             if "error" in data:
                 logger.error(f"TradingView login failed: {data['error']}")
-                return "unauthorized_user_token"
+                return None
             token = data.get("user", {}).get("auth_token", "")
             if token:
                 logger.info("TradingView login successful")
                 return token
-            logger.error("No auth_token in TradingView response")
-            return "unauthorized_user_token"
+            return None
         except Exception as e:
             logger.error(f"TradingView login error: {e}")
-            return "unauthorized_user_token"
+            return None
 
     # ── WebSocket helpers ──────────────────────────────────────────────────
 
@@ -192,6 +247,7 @@ class TvDatafeed:
         Returns:
             pd.DataFrame with columns: symbol, open, high, low, close, volume
         """
+        self._refresh_token_if_needed()
         full_symbol = self._format_symbol(symbol, exchange, fut_contract)
         chart_session = self._generate_session("cs_")
         quote_session = self._generate_session("qs_")
