@@ -1,6 +1,7 @@
 """
 tvDatafeed — vendored WebSocket-based TradingView data fetcher.
-No Selenium or Chrome required. Uses no-login mode (public data).
+Authenticates via TradingView username/password using their sign-in API.
+Falls back to no-login mode if credentials are not provided.
 """
 
 import datetime
@@ -11,6 +12,7 @@ import random
 import re
 import string
 
+import requests
 import pandas as pd
 from websocket import create_connection
 
@@ -35,16 +37,40 @@ class Interval(enum.Enum):
 
 class TvDatafeed:
     _headers = json.dumps({"Origin": "https://data.tradingview.com"})
+    _sign_in_url = "https://www.tradingview.com/accounts/signin/"
 
     def __init__(self, username: str = None, password: str = None):
-        # No-login mode — works for all public symbols
-        self.token = "unauthorized_user_token"
-        if username or password:
-            logger.warning(
-                "Credential-based login is not supported in this vendored version. "
-                "Using no-login mode (public data only)."
-            )
+        self.token = self._get_token(username, password)
         self.ws = None
+
+    def _get_token(self, username: str, password: str) -> str:
+        if not username or not password:
+            logger.warning("No credentials provided — using no-login mode (limited data)")
+            return "unauthorized_user_token"
+        try:
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://www.tradingview.com",
+            })
+            resp = session.post(
+                self._sign_in_url,
+                data={"username": username, "password": password, "remember": "on"},
+                timeout=10,
+            )
+            data = resp.json()
+            if "error" in data:
+                logger.error(f"TradingView login failed: {data['error']}")
+                return "unauthorized_user_token"
+            token = data.get("user", {}).get("auth_token", "")
+            if token:
+                logger.info("TradingView login successful — using authenticated token")
+                return token
+            logger.error("TradingView login: no auth_token in response")
+            return "unauthorized_user_token"
+        except Exception as e:
+            logger.error(f"TradingView login error: {e}")
+            return "unauthorized_user_token"
 
     # ── WebSocket helpers ──────────────────────────────────────────────────
 
